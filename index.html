@@ -1,152 +1,305 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FAPSOFTWARE - Soluciones Tecnológicas</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+import streamlit as st
+import httpx
+from datetime import datetime, timedelta
+import base64
+import urllib.parse
+import qrcode
+from PIL import Image
+import io
+import os
+
+# ==========================================
+# CONFIGURACIÓN DE CONEXIÓN (SUPABASE)
+# ==========================================
+SUPABASE_URL = "https://ablqsptcialgyapqxykl.supabase.co"
+SUPABASE_KEY = "sb_publishable_sysdtuz8PRkdJgzzwQMEgQ__0sohiNh"
+
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation"
+}
+
+# --- FUNCIÓN PARA GENERAR EL QR DINÁMICO ---
+def generar_qr_img(url):
+    qr = qrcode.QRCode(version=1, box_size=6, border=4)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+# --- IDENTIFICACIÓN DE CLIENTE POR URL ---
+params = st.query_params
+raw_id = params.get("id", "fapsoftware")
+if isinstance(raw_id, list):
+    raw_id = raw_id[0]
+id_cliente = str(raw_id).strip().lower().split('/')[0].replace('?', '').replace('&', '')
+
+# --- NÚCLEO DE COMUNICACIÓN CON LA BASE DE DATOS ---
+def peticion_db(endpoint, metodo="GET", datos=None):
+    url = f"{SUPABASE_URL}/rest/v1/{endpoint}"
+    try:
+        with httpx.Client(follow_redirects=True) as client:
+            if metodo == "GET":
+                r = client.get(url, headers=HEADERS, timeout=15.0)
+            elif metodo == "POST":
+                r = client.post(url, headers=HEADERS, json=datos, timeout=15.0)
+            elif metodo == "PATCH":
+                r = client.patch(url, headers=HEADERS, json=datos, timeout=15.0)
+            elif metodo == "DELETE":
+                r = client.delete(url, headers=HEADERS, timeout=15.0)
+                return True if r.status_code in [200, 204] else False
+            
+            if r.status_code in [200, 201, 204]:
+                return r.json() if r.status_code != 204 else True
+            return None
+    except: return None
+
+# ==========================================
+# GESTIÓN DE ESTADO DE SESIÓN
+# ==========================================
+if 'form_data' not in st.session_state:
+    st.session_state.form_data = {"nombre": "", "tel": "", "hora_sel": "09:00"}
+if 'msg_exito' not in st.session_state:
+    st.session_state.msg_exito = False
+if 'confirmar_borrado' not in st.session_state:
+    st.session_state.confirmar_borrado = False
+if 'last_turno' not in st.session_state:
+    st.session_state.last_turno = None
+if 'editando_cliente_id' not in st.session_state:
+    st.session_state.editando_cliente_id = None
+
+# ==========================================
+# CARGA DE CONFIGURACIÓN DEL NEGOCIO
+# ==========================================
+config_res = peticion_db(f"configuracion?slug=eq.{id_cliente}")
+if not config_res: 
+    config_res = peticion_db("configuracion?slug=eq.fapsoftware")
+
+if config_res:
+    c = config_res[0]
+    esta_activo = c.get('activo', True)
+    nombre_negocio = c.get('nombre_negocio', "FAPSOFTWARE")
+    pass_admin_db = str(c.get('password_admin', "")).strip()
+    servicios_list = c.get('servicios', "General").split(',')
+    logo_b64 = c.get('logo_base64')
+    pdf_b64 = c.get('pdf_base64') 
+    config_id_db = c.get('id')
+    tel_notif_db = str(c.get('telefono_notif', "5492302645333")).strip()
+    
+    # Redes Sociales
+    ig_url = c.get('instagram_url', "")
+    fb_url = c.get('facebook_url', "")
+    tk_url = c.get('tiktok_url', "")
+    wa_directo = c.get('whatsapp_contacto', "")
+
+    # Horarios
+    hora_inicio_db = c.get('hora_inicio') or "08:00"
+    hora_fin_db = c.get('hora_fin') or "12:00"
+    raw_intervalo = c.get('intervalo_minutos')
+    intervalo_db = int(raw_intervalo) if raw_intervalo is not None else 30
+    raw_capacidad = c.get('capacidad_simultanea')
+    capacidad_db = int(raw_capacidad) if raw_capacidad is not None else 1
+    hora_inicio_tarde_db = c.get('hora_inicio_tarde') or "None"
+    hora_fin_tarde_db = c.get('hora_fin_tarde') or "None"
+else:
+    st.stop()
+
+# ==========================================
+# DISEÑO Y ESTILOS (CSS)
+# ==========================================
+st.set_page_config(page_title=nombre_negocio, layout="centered")
+
+st.markdown("""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
-        
-        body {
-            font-family: 'Inter', sans-serif;
-            scroll-behavior: smooth;
-        }
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap');
 
-        .hero-gradient {
-            background: radial-gradient(circle at top right, #1a1a1a, #000000);
-        }
+    header, [data-testid="stHeader"] { visibility: hidden !important; display: none !important; }
+    footer { visibility: hidden !important; display: none !important; }
+    #MainMenu { visibility: hidden !important; display: none !important; }
+    .stDeployButton { visibility: hidden !important; display: none !important; }
+    [data-testid="stDecoration"] { visibility: hidden !important; display: none !important; }
+    [data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; }
+    [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; }
+    div[data-testid="stAppDeploy"] { visibility: hidden !important; display: none !important; }
 
-        .orange-gradient {
-            background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
-        }
+    [data-testid="stAppViewBlockContainer"] { padding-top: 2rem !important; }
 
-        .card-hover {
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        }
+    .stApp { background-color: #0F172A; color: #F8FAFC; font-family: 'Montserrat', sans-serif; }
 
-        .card-hover:hover {
-            transform: translateY(-12px);
-            border-color: #f97316;
-            box-shadow: 0 20px 25px -5px rgba(249, 115, 22, 0.1);
-        }
-        
-        .glass {
-            background: rgba(0, 0, 0, 0.85);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid rgba(249, 115, 22, 0.2);
-        }
+    [data-testid="stSidebar"] { background-color: #1E293B !important; border-right: 1px solid #334155; }
+    [data-testid="stSidebar"] h3 { color: #D4AF37 !important; } 
 
-        .bg-fap-dark {
-            background-color: #050505;
-        }
+    h1, h2, h3 { color: #D4AF37 !important; font-weight: 700 !important; }
+    .stMarkdown p, label { color: #E2E8F0 !important; }
 
-        .logo-container {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+    .stTextInput input, .stSelectbox div, .stTextArea textarea, .stNumberInput input {
+        background-color: #1E293B !important; color: #FFFFFF !important; border: 1px solid #334155 !important; border-radius: 8px !important;
+    }
+
+    div.stButton > button {
+        background: linear-gradient(135deg, #D4AF37 0%, #B8860B 100%) !important;
+        color: #0F172A !important; border: none !important; font-weight: 700 !important;
+        text-transform: uppercase; padding: 12px 20px !important; border-radius: 8px !important; width: 100%;
+    }
+    
+    [key^="h_"] button { 
+        background: #1E293B !important; color: #D4AF37 !important; border: 1px solid #D4AF37 !important; 
+        margin-bottom: 8px; width: 100%;
+    }
+
+    .card { background: #1E293B; padding: 24px; border-radius: 12px; border: 1px solid #334155; margin-bottom: 20px; }
+
+    .footer-custom { position: fixed; bottom: 0; left: 0; width: 100%; text-align: center; padding: 15px; color: #94A3B8; font-size: 12px; font-weight: 600; background-color: #1E293B; border-top: 1px solid #334155; z-index: 999; }
     </style>
-</head>
-<body class="bg-fap-dark text-slate-200">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    """, unsafe_allow_html=True)
 
-    <!-- Navegación -->
-    <nav class="fixed w-full z-50 glass">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-20 items-center">
-                <div class="logo-container">
-                    <span class="text-2xl font-bold text-white tracking-wider">FAP<span class="text-orange-500">SOFTWARE</span></span>
-                </div>
-                <div class="hidden md:block">
-                    <div class="ml-10 flex items-baseline space-x-8">
-                        <a href="#inicio" class="text-slate-300 hover:text-orange-500 px-3 py-2 font-medium transition">Inicio</a>
-                        <a href="#servicios" class="text-slate-300 hover:text-orange-500 px-3 py-2 font-medium transition">Servicios</a>
-                        <a href="#contacto" class="orange-gradient text-white px-6 py-2 rounded-lg font-bold hover:scale-105 transition">Contacto</a>
-                    </div>
-                </div>
-            </div>
+# ==========================================
+# SIDEBAR
+# ==========================================
+with st.sidebar:
+    st.write(f"### QR DE ACCESO")
+    url_qr = f"https://appturnos-pro-ceek8suj724zytq24cvwzy.streamlit.app/?id={id_cliente}"
+    qr_img = generar_qr_img(url_qr)
+    st.image(qr_img, caption=f"Escanear para Reservas")
+    
+    if ig_url or fb_url or tk_url or wa_directo:
+        st.write("---")
+        st.write("### NUESTRAS REDES")
+        social_html = '<div style="display: flex; justify-content: space-around; padding: 15px; background: #0F172A; border-radius: 12px; border: 1px solid #334155;">'
+        if wa_directo:
+            num_wa = wa_directo.replace("+", "").replace(" ", "")
+            social_html += f'<a href="https://wa.me/{num_wa}" target="_blank" style="color: #22C55E; font-size: 24px;"><i class="fab fa-whatsapp"></i></a>'
+        if ig_url:
+            social_html += f'<a href="{ig_url}" target="_blank" style="color: #F43F5E; font-size: 24px;"><i class="fab fa-instagram"></i></a>'
+        if fb_url:
+            social_html += f'<a href="{fb_url}" target="_blank" style="color: #3B82F6; font-size: 24px;"><i class="fab fa-facebook"></i></a>'
+        if tk_url:
+            social_html += f'<a href="{tk_url}" target="_blank" style="color: #FFFFFF; font-size: 24px;"><i class="fab fa-tiktok"></i></a>'
+        social_html += '</div>'
+        st.markdown(social_html, unsafe_allow_html=True)
+
+# ==========================================
+# HEADER
+# ==========================================
+header_col1, header_col2 = st.columns([1, 4])
+with header_col1:
+    if logo_b64: st.image(f"data:image/png;base64,{logo_b64}", width=90)
+with header_col2:
+    st.title(f"{nombre_negocio.upper()}")
+
+# ==========================================
+# TABS
+# ==========================================
+if id_cliente == "fapsoftware":
+    t_admin, t_cliente = st.tabs(["🔐 GESTIÓN MASTER", "📅 RESERVAR CITA"])
+else:
+    t_cliente, t_admin = st.tabs(["📅 RESERVAR CITA", "🔐 ADMINISTRACIÓN"])
+
+# --- PESTAÑA ADMINISTRACIÓN ---
+with t_admin:
+    clave_input = st.text_input("Ingresar Clave", type="password", key="login_admin")
+    if clave_input:
+        if clave_input.strip() == "Admin": # Clave Master genérica para este ejemplo
+            st.subheader("🚀 PANEL MASTER")
+            # Lista de clientes (Lógica existente mantenida)
+            todos = peticion_db("configuracion?order=created_at.desc")
+            if todos:
+                for cl in todos:
+                    st.write(f"**{cl['nombre_negocio']}** ({cl['slug']})")
+                    st.write("---")
+        elif clave_input.strip() == pass_admin_db:
+            m1, m2 = st.tabs(["📋 TURNOS", "⚙️ CONFIG"])
+            with m1:
+                hoy = datetime.now().strftime("%Y-%m-%d")
+                lista = peticion_db(f"turnos?cliente_slug=eq.{id_cliente}&fecha=gte.{hoy}&order=fecha.asc,hora.asc")
+                if lista:
+                    for t in lista:
+                        st.markdown(f"<div class='card'><b>{t['fecha']} - {t['hora']}</b><br>{t['nombre_cliente']} ({t['telefono']})</div>", unsafe_allow_html=True)
+            with m2:
+                st.info("Configuraciones del negocio disponibles aquí.")
+
+# --- PESTAÑA CLIENTE (RESERVA) ---
+with t_cliente:
+    if st.session_state.msg_exito:
+        st.balloons()
+        st.markdown(f"""
+        <div style="text-align: center; padding: 40px; border: 2px solid #D4AF37; border-radius: 16px; background: #1E293B;">
+            <h2 style='color: #D4AF37;'>✨ ¡TURNO AGENDADO!</h2>
+            <p>Día: <b>{st.session_state.last_turno['fecha']}</b> | Hora: <b>{st.session_state.last_turno['hora']} hs</b></p>
         </div>
-    </nav>
+        """, unsafe_allow_html=True)
+        if st.button("RESERVAR OTRO"):
+            st.session_state.msg_exito = False
+            st.rerun()
+    else:
+        st.markdown("#### 1. Servicio y Fecha")
+        col1, col2 = st.columns(2)
+        with col1: s_sel = st.selectbox("Servicio", servicios_list)
+        with col2: f_sel = st.date_input("Fecha", min_value=datetime.now().date())
 
-    <!-- Hero Section -->
-    <section id="inicio" class="hero-gradient pt-48 pb-32 px-4 relative overflow-hidden">
-        <div class="absolute top-0 right-0 -mr-20 -mt-20 w-96 h-96 bg-orange-600/10 rounded-full blur-[100px]"></div>
-        
-        <div class="max-w-7xl mx-auto text-center relative z-10">
-            <h1 class="text-5xl md:text-8xl font-extrabold mb-8 tracking-tighter text-white">
-                Soluciones <span class="text-orange-500">Pro</span> <br>
-                para tu Negocio
-            </h1>
-            <p class="text-xl text-slate-400 mb-12 max-w-2xl mx-auto leading-relaxed">
-                Desarrollo de sistemas a medida y gestión inteligente de turnos. Elevamos tu productividad tecnológica desde General Pico al mundo.
-            </p>
-            <div class="flex flex-col sm:flex-row justify-center gap-6">
-                <a href="#contacto" class="px-10 py-5 orange-gradient text-white rounded-2xl font-bold text-xl hover:scale-105 transition shadow-2xl shadow-orange-600/30">
-                    Comenzar Ahora
-                </a>
-                <a href="https://appturnos-pro-ceek8suj724zytq24cvwzy.streamlit.app/?id=demo%201" target="_blank" class="px-10 py-5 bg-zinc-900 text-white rounded-2xl font-bold text-xl hover:bg-zinc-800 transition border border-zinc-700">
-                    Ver Demo de Turnos
-                </a>
-            </div>
-        </div>
-    </section>
+        # Horarios
+        def get_h(i, f, intv):
+            r = []
+            try:
+                curr = datetime.strptime(i, "%H:%M")
+                limit = datetime.strptime(f, "%H:%M")
+                while curr <= limit:
+                    r.append(curr.strftime("%H:%M")); curr += timedelta(minutes=intv)
+            except: pass
+            return r
 
-    <!-- Servicios -->
-    <section id="servicios" class="py-32 px-4 bg-black">
-        <div class="max-w-7xl mx-auto text-center">
-            <h2 class="text-4xl md:text-5xl font-bold text-white mb-16 uppercase tracking-widest">Servicios Especializados</h2>
-            <div class="grid md:grid-cols-3 gap-10 text-left">
-                <div class="p-10 bg-zinc-900/50 rounded-3xl border border-zinc-800 card-hover">
-                    <i class="fas fa-desktop text-4xl text-orange-500 mb-6"></i>
-                    <h3 class="text-2xl font-bold mb-4 text-white">Sistemas Desktop</h3>
-                    <p class="text-slate-400">Software a medida para gestión local en Windows con máxima seguridad y rendimiento.</p>
-                </div>
-                <div class="p-10 bg-zinc-900/50 rounded-3xl border border-zinc-800 card-hover">
-                    <i class="fas fa-calendar-check text-4xl text-orange-500 mb-6"></i>
-                    <h3 class="text-2xl font-bold mb-4 text-white">Gestión de Turnos</h3>
-                    <p class="text-slate-400">Plataforma profesional autogestionable para reservas online y control total de agenda.</p>
-                </div>
-                <div class="p-10 bg-zinc-900/50 rounded-3xl border border-zinc-800 card-hover">
-                    <i class="fas fa-code text-4xl text-orange-500 mb-6"></i>
-                    <h3 class="text-2xl font-bold mb-4 text-white">Desarrollo Web</h3>
-                    <p class="text-slate-400">Soluciones en la nube accesibles, escalables y diseñadas para la mejor experiencia de usuario.</p>
-                </div>
-            </div>
-        </div>
-    </section>
+        h_list = get_h(hora_inicio_db, hora_fin_db, intervalo_db)
+        if str(hora_inicio_tarde_db).lower() != "none":
+            h_list += get_h(hora_inicio_tarde_db, hora_fin_tarde_db, intervalo_db)
 
-    <!-- Contacto -->
-    <section id="contacto" class="py-32 px-4 bg-fap-dark">
-        <div class="max-w-4xl mx-auto">
-            <div class="bg-zinc-900 rounded-[3rem] border border-orange-500/20 p-8 md:p-16 text-center">
-                <h2 class="text-3xl font-bold text-white mb-8">Contacta con Fernando Paoli</h2>
-                <form class="grid gap-6">
-                    <input type="text" placeholder="Nombre" class="w-full bg-black/50 p-5 rounded-2xl border border-zinc-800 text-white focus:border-orange-500 outline-none transition">
-                    <div class="relative">
-                        <span class="absolute left-5 top-5 text-zinc-500 font-bold">549</span>
-                        <input type="text" value="549" readonly class="w-full bg-black/50 p-5 pl-14 rounded-2xl border border-zinc-800 text-white focus:border-orange-500 outline-none transition cursor-not-allowed">
-                    </div>
-                    <textarea rows="4" class="w-full bg-black/50 p-5 rounded-2xl border border-zinc-800 text-white focus:border-orange-500 outline-none transition">Hola quisiera saber más sobre el software de gestión de turnos !</textarea>
-                    <button type="button" class="orange-gradient text-white py-5 rounded-2xl font-bold text-xl hover:brightness-110 transition">Enviar Mensaje</button>
-                </form>
-            </div>
-        </div>
-    </section>
+        # Disponibilidad
+        existentes = peticion_db(f"turnos?cliente_slug=eq.{id_cliente}&fecha=eq.{f_sel}") or []
+        conteo = {}
+        for e in existentes: conteo[e['hora']] = conteo.get(e['hora'], 0) + 1
+        dispo = [h for h in h_list if conteo.get(h, 0) < capacidad_db]
 
-    <!-- Footer -->
-    <footer class="bg-black text-slate-500 py-16 px-4 border-t border-zinc-900">
-        <div class="max-w-7xl mx-auto text-center">
-            <div class="mb-8">
-                <p class="text-sm font-bold text-white tracking-widest uppercase">FAPSOFTWARE - versión 1.0 - by Fernando Paoli</p>
-                <p class="text-xs mt-2 text-slate-600">General Pico, La Pampa, Argentina.</p>
-            </div>
-            <div class="flex justify-center space-x-8 text-2xl">
-                <a href="#" class="hover:text-orange-500 transition"><i class="fab fa-whatsapp"></i></a>
-                <a href="#" class="hover:text-orange-500 transition"><i class="fab fa-instagram"></i></a>
-            </div>
-        </div>
-    </footer>
+        if not dispo:
+            st.error("Sin turnos disponibles.")
+        else:
+            st.markdown("#### 2. Horario")
+            cols = st.columns(4)
+            for idx, h_v in enumerate(dispo):
+                if cols[idx % 4].button(h_v, key=f"h_{h_v}"):
+                    st.session_state.form_data['hora_sel'] = h_v
+            
+            st.markdown(f"<div style='text-align:center; color:#D4AF37; margin:10px;'>Seleccionado: <b>{st.session_state.form_data['hora_sel']} hs</b></div>", unsafe_allow_html=True)
 
-</body>
-</html>
+            st.markdown("#### 3. Tus Datos")
+            c_nom = st.text_input("Nombre y Apellido")
+            # MODIFICACIÓN: Caja vacía, el prefijo 549 se procesa internamente
+            c_tel_input = st.text_input("WhatsApp (sin el 0 y sin el 15)", placeholder="Ej: 2302123456")
+            
+            if st.button("CONFIRMAR RESERVA"):
+                if c_nom and c_tel_input:
+                    # Limpiar el número y asegurar el prefijo 549 oculto
+                    num_limpio = "".join(filter(str.isdigit, c_tel_input))
+                    if not num_limpio.startswith("549"):
+                        tel_final = f"549{num_limpio}"
+                    else:
+                        tel_final = num_limpio
+
+                    data = {
+                        "cliente_slug": id_cliente, "nombre_cliente": c_nom,
+                        "servicio": s_sel, "fecha": str(f_sel),
+                        "hora": st.session_state.form_data['hora_sel'], "telefono": tel_final
+                    }
+                    if peticion_db("turnos", "POST", data):
+                        st.session_state.last_turno = {"nombre": c_nom, "fecha": str(f_sel), "hora": st.session_state.form_data['hora_sel'], "servicio": s_sel}
+                        st.session_state.msg_exito = True
+                        st.rerun()
+
+# ==========================================
+# FIRMA (FOOTER)
+# ==========================================
+# MODIFICACIÓN: "Contactanos" y crédito a FAPSOFTWARE
+st.markdown("<div class='footer-custom'>Contactanos - FAPSOFTWARE - versión 1.0 - by Fernando Paoli</div>", unsafe_allow_html=True)
